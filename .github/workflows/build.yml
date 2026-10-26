@@ -1,0 +1,93 @@
+name: Build fwjz dylib
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Source Code
+        run: |
+          cat << 'EOF' > fwjz.m
+          #import <UIKit/UIKit.h>
+          #import <mach/mach_time.h>
+
+          @interface FWJZOverlay : UIWindow
+          @property (nonatomic, strong) UILabel *label;
+          @property (nonatomic, strong) CADisplayLink *displayLink;
+          @property (nonatomic, assign) NSInteger frameCount;
+          @property (nonatomic, assign) CFTimeInterval lastTime;
+          @property (nonatomic, assign) CGFloat hue;
+          @end
+
+          @implementation FWJZOverlay
+          + (instancetype)sharedInstance {
+              static FWJZOverlay *inst = nil;
+              static dispatch_once_t onceToken;
+              dispatch_once(&onceToken, ^{ inst = [[FWJZOverlay alloc] init]; });
+              return inst;
+          }
+          - (instancetype)init {
+              if (self = [super initWithFrame:CGRectMake(20, 50, 240, 44)]) {
+                  self.windowLevel = UIWindowLevelStatusBar + 100.0;
+                  self.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.45];
+                  self.layer.cornerRadius = 8.0;
+                  self.layer.masksToBounds = YES;
+                  self.userInteractionEnabled = NO;
+
+                  _label = [[UILabel alloc] initWithFrame:self.bounds];
+                  _label.textAlignment = NSTextAlignmentCenter;
+                  _label.numberOfLines = 2;
+                  _label.font = [UIFont boldSystemFontOfSize:11.0];
+                  [self addSubview:_label];
+
+                  _hue = 0.0; _frameCount = 0; _lastTime = CACurrentMediaTime();
+                  _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(tick:)];
+                  [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+              }
+              return self;
+          }
+          - (void)tick:(CADisplayLink *)link {
+              self.hue += 0.01;
+              if (self.hue > 1.0) self.hue = 0.0;
+              UIColor *color = [UIColor colorWithHue:self.hue saturation:1.0 brightness:1.0 alpha:1.0];
+              self.label.textColor = color;
+              self.layer.borderColor = color.CGColor;
+              self.layer.borderWidth = 1.0;
+
+              self.frameCount++;
+              CFTimeInterval now = CACurrentMediaTime();
+              if (now - self.lastTime >= 1.0) {
+                  NSInteger fps = (NSInteger)round(self.frameCount / (now - self.lastTime));
+                  self.frameCount = 0; self.lastTime = now;
+                  NSDateFormatter *df = [[NSDateFormatter alloc] init];
+                  [df setDateFormat:@"dd/MM/yyyy HH:mm:ss"];
+                  self.label.text = [NSString stringWithFormat:@"[ fwjz ] - %ld FPS\n%@", (long)fps, [df stringFromDate:[NSDate date]]];
+              }
+          }
+          @end
+
+          __attribute__((constructor)) static void init(void) {
+              dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                  [[FWJZOverlay sharedInstance] setHidden:NO];
+              });
+          }
+          EOF
+
+      - name: Compile dylib directly with Clang
+        run: |
+          xcrun -sdk iphoneos clang -target arm64-apple-ios14.0 \
+            -dynamiclib -fobjc-arc \
+            -framework UIKit -framework QuartzCore -framework CoreGraphics \
+            fwjz.m -o fwjz.dylib
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fwjz-dylib
+          path: fwjz.dylib
